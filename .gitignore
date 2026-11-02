@@ -1,0 +1,17 @@
+# server data
+server/data/
+data/
+
+# build outputs / game files - never commit these
+*.apk
+*.ipa
+*.love
+Balatro.exe
+Balatro.unpatched.exe
+
+# python
+__pycache__/
+*.pyc
+
+# test artifacts
+tests/*.png

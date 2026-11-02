@@ -1,0 +1,19 @@
+# Balatro Save Sync - stack for Dockge / docker compose.
+# Put server.py next to this file (same stack folder), then deploy.
+services:
+  balatro-sync:
+    image: python:3.15-alpine
+    container_name: balatro-sync
+    restart: unless-stopped
+    command: ["python", "-u", "/app/server.py"]
+    ports:
+      - "8765:8765"
+    environment:
+      # Shared secret, must match "token" in config.lua. Generate one, e.g.:
+      #   python -c "import secrets; print(secrets.token_hex(16))"
+      SYNC_TOKEN: "CHANGE_ME"
+      SYNC_HISTORY_KEEP: "50"
+      TZ: Europe/Berlin
+    volumes:
+      - ./server.py:/app/server.py:ro
+      - ./data:/data

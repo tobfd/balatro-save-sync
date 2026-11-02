@@ -1,0 +1,28 @@
+[manifest]
+version = "1.0.0"
+dump_lua = true
+priority = -100
+
+# Works with Lovely 0.5 and newer (version.dll and winmm.dll builds).
+
+# The sync code, available to the game as require("balatro_sync").
+[[patches]]
+[patches.module]
+source = "balatro_sync.lua"
+before = "main.lua"
+name = "balatro_sync"
+
+# Settings, available as require("balatro_sync_config").
+[[patches]]
+[patches.module]
+source = "config.lua"
+before = "main.lua"
+name = "balatro_sync_config"
+
+# Hook in at the very top of main.lua, before Balatro defines love.load
+# and reads its save files.
+[[patches]]
+[patches.copy]
+target = "main.lua"
+position = "prepend"
+sources = ["boot.lua"]
