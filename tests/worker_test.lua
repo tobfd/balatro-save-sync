@@ -394,5 +394,86 @@ check(r.stale == true and r.uploaded == 0, "running session goes stale instead o
 T5b.restart(); T5b.startup()
 check(T5b.read("5/profile.jkr") == "return {pc=5}", "after reload the tablet has the server state")
 
+-- profile.jkr content shaped like Balatro writes it
+local function profile(rounds, hands, extra)
+  return ('return {["career_stats"]={["c_cards_discarded"]=%d,["c_hands_played"]=%d,["c_rounds"]=%d,["c_wins"]=0,},'
+    .. '["name"]="P1",%s}'):format(rounds * 3, hands, rounds, extra or "")
+end
+
+local function server_file(path)
+  local http = require("socket.http")
+  local ltn12 = require("ltn12")
+  local chunks = {}
+  local ok, code = http.request({
+    url = server_url .. "/api/file?path=" .. path:gsub("/", "%%2F"),
+    headers = { ["x-sync-token"] = token },
+    sink = ltn12.sink.table(chunks),
+  })
+  return code == 200 and table.concat(chunks) or nil
+end
+
+print("16) Fresh phone synced first: PC with real progress keeps its saves")
+local PH = make_device("Phone", { profiles = "7" })
+PH.write("7/profile.jkr", profile(0, 0))
+PH.write("7/meta.jkr", "return {unlocked={}}")
+r = PH.startup()
+check(r.uploaded == 2, "empty phone profile reaches the empty server first")
+local PC7 = make_device("PC", { profiles = "7" })
+PC7.clock = PH.clock - 5000                                  -- PC files are OLDER
+PC7.write("7/profile.jkr", profile(429, 1103))
+PC7.write("7/meta.jkr", "return {unlocked={'j_blueprint'}}")
+PC7.write("7/save.jkr", "Z:return {run=7}")
+r = PC7.startup()
+check(PC7.read("7/profile.jkr") == profile(429, 1103), "PC keeps its profile")
+check(PC7.read("7/meta.jkr") == "return {unlocked={'j_blueprint'}}", "PC keeps its unlocks")
+check(r.uploaded == 3, "PC uploads its whole slot")
+check(server_file("7/profile.jkr") == profile(429, 1103), "server now has the PC profile")
+PH.restart(); PH.startup()
+check(PH.read("7/profile.jkr") == profile(429, 1103), "phone gets the PC progress on next start")
+check(PH.read("7/save.jkr") == "Z:return {run=7}", "phone gets the PC run too")
+
+print("17) The device that played less still joins")
+local A8 = make_device("PC", { profiles = "8" })
+A8.write("8/profile.jkr", profile(300, 900))
+A8.write("8/save.jkr", "Z:return {pc_run=1}")
+A8.startup()
+local B8 = make_device("Tablet", { profiles = "8" })
+B8.clock = A8.clock + 9000                                   -- newer files, less progress
+B8.write("8/profile.jkr", profile(12, 40))
+B8.write("8/save.jkr", "Z:return {tablet_run=1}")
+r = B8.startup()
+check(B8.read("8/profile.jkr") == profile(300, 900), "tablet takes the more advanced profile")
+check(B8.read("8/save.jkr") == "Z:return {pc_run=1}", "tablet takes the matching run")
+check(r.uploaded == 0, "tablet uploads nothing")
+
+print("18) Compressed profiles are compared too")
+local A9 = make_device("Phone", { profiles = "9" })
+A9.write("9/profile.jkr", "Z:" .. profile(5, 20))
+A9.startup()
+local B9 = make_device("PC", { profiles = "9" })
+B9.write("9/profile.jkr", "Z:" .. profile(80, 250))
+r = B9.startup()
+check(B9.read("9/profile.jkr") == "Z:" .. profile(80, 250), "compressed PC profile with more rounds is kept")
+check(server_file("9/profile.jkr") == "Z:" .. profile(80, 250), "and uploaded")
+
+print("19) Same rounds: more hands decide, a full tie joins")
+-- slot 7 holds profile(429, 1103) from test 16
+local T7 = make_device("Tablet", { profiles = "7" })
+T7.write("7/profile.jkr", profile(429, 1104))
+T7.startup()
+check(server_file("7/profile.jkr") == profile(429, 1104), "one more hand wins")
+local D7 = make_device("Deck", { profiles = "7" })
+D7.write("7/profile.jkr", profile(429, 1104, '["x"]=1,'))
+D7.startup()
+check(D7.read("7/profile.jkr") == profile(429, 1104), "full tie: the joining device takes the server state")
+
+print("20) A device without a readable local profile joins as before")
+-- slot 8 holds profile(300, 900) and a run from test 17, no meta.jkr
+local C8 = make_device("Phone", { profiles = "8" })
+C8.write("8/meta.jkr", "return {only_meta=1}")
+C8.startup()
+check(C8.read("8/profile.jkr") == profile(300, 900), "device without profile adopts the server profile")
+check(C8.read("8/meta.jkr") == nil, "and its meta-only state is replaced (backed up)")
+
 print(("\n%d passed, %d failed"):format(passed, failed))
 os.exit(failed == 0 and 0 or 1)
