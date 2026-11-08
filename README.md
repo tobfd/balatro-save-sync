@@ -6,8 +6,13 @@ through a tiny self-hosted server in your home network.
 
 No cable, no ADB, no manual save transfers, and your PC mods are never touched.
 
-```
-PC (Steam + Lovely mod)  <-- HTTP, home network -->  sync server (Docker)  <-- HTTP -->  Android (patched APK)
+```mermaid
+flowchart LR
+    PC["PC<br/>Steam + Lovely mod"]
+    S[("Sync server<br/>Docker")]
+    A["Android devices<br/>patched APK"]
+    PC <-->|"HTTP · home network"| S
+    S <-->|"HTTP · home network"| A
 ```
 
 > Unofficial fan project. Not affiliated with LocalThunk or Playstack. No game files
@@ -40,10 +45,29 @@ Synced files: profile slots `1`, `2`, `3` × `profile.jkr`, `meta.jkr`, `save.jk
 ## Repository layout
 
 ```
-server/      server.py + compose.yaml     -> your home server (Docker / Dockge / Portainer ...)
-pc-mod/      BalatroSync/                 -> %AppData%\Balatro\Mods\BalatroSync
-android/     make_patched_exe.py / .bat   -> builds the Balatro.exe that balatro-mobile-maker turns into the APK
-tests/       sync logic + real LOVE engine tests (Linux)
+balatro-save-sync
+├───android
+│   ├───make_patched_exe.bat
+│   └───make_patched_exe.py
+├───pc-mod
+│   └───BalatroSync
+│       ├───balatro_sync.lua
+│       ├───boot.lua
+│       ├───config.lua
+│       └───lovely.toml
+├───server
+│   ├───compose.yaml
+│   └───server.py
+├───tests
+│   ├───love_e2e
+│   │   ├───balatro_sync_config.lua
+│   │   ├───conf.lua
+│   │   └───game_main.lua
+│   ├───love_e2e.py
+│   ├───run_worker_test.sh
+│   └───worker_test.lua
+├───LICENSE
+└───README.md
 ```
 
 ## Setup
@@ -109,6 +133,9 @@ Needs Python 3 on the PC.
    It is signed with the same debug key as before, so it installs as an update and keeps your saves.
    If Android ever refuses because of a signature conflict, **do not uninstall**. That wipes the saves on the device.
 
+More than one Android device (e.g. tablet and phone): repeat these steps per device with its own
+name, e.g. `--device Phone`. Every device keeps its own sync state, so any number of devices works.
+
 ### 5. First sync
 
 Start Balatro first on the device you played **last**. It uploads its saves.
@@ -125,12 +152,6 @@ VPN such as Tailscale or WireGuard and use the server's VPN address in `config.l
 The Android build runs vanilla Balatro. When its progress syncs back, unlocks or discoveries
 that only exist through PC content mods may get dropped. If that matters, play modded on its
 own profile slot and leave that slot out of `profiles` in `config.lua` (e.g. `profiles = "1,2"`).
-
-## Lost your PC mods to balatro-mobile-maker?
-
-Its "pull saves from Android" option deletes `%AppData%\Balatro` completely, including `Mods`.
-It makes a copy first in `%AppData%\BalatroBACKUP`. Your mods are probably still in
-`%AppData%\BalatroBACKUP\Mods`.
 
 ## Troubleshooting
 
@@ -156,18 +177,11 @@ it adopts the server state again.
 
 ## Tested with
 
-- Balatro 1.0.1o (Steam, Windows) with Lovely
-- balatro-mobile-maker beta 0.8.3, Samsung Galaxy Tab S8+
-- Server on `python:3.12-alpine`, tests also on Python 3.15
+- Balatro 1.0.1o (Steam, Windows) with Lovely 0.9.0
+- balatro-mobile-maker beta 0.8.3 on a Samsung Galaxy Tab S8+ and a Google Pixel 9
+- Server on `python:3.12-alpine`, also checked with Python 3.15
 
 iOS builds are not supported.
-
-## Tests
-
-```
-tests/run_worker_test.sh   # sync logic, two simulated devices against a real server (needs luajit + lua-socket)
-python3 tests/love_e2e.py  # fake Balatro in real LOVE 11.5 under Xvfb (needs love + xvfb)
-```
 
 ## License
 
