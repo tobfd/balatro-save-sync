@@ -3,7 +3,8 @@ name: Release
 # Two ways to release:
 # - Actions tab -> Release -> "Run workflow" -> enter the version (e.g. 1.0.1)
 # - or push a tag like v1.0.1
-# The version must match VERSION in pc-mod/BalatroSync/balatro_sync.lua.
+# Before: set VERSION in pc-mod/BalatroSync/balatro_sync.lua and lovely.toml,
+# and add a "## x.y.z" section to CHANGELOG.md (it becomes the release notes).
 
 on:
   workflow_dispatch:
@@ -43,6 +44,10 @@ jobs:
             echo "::error::$TAG does not match the mod version $mod in balatro_sync.lua"
             exit 1
           fi
+          if ! grep -qE "^## \[?${TAG#v}\]?( |$)" CHANGELOG.md; then
+            echo "::error::CHANGELOG.md has no section '## ${TAG#v}'"
+            exit 1
+          fi
           if gh release view "$TAG" > /dev/null 2>&1; then
             echo "::error::Release $TAG already exists"
             exit 1
@@ -59,9 +64,17 @@ jobs:
           sha256sum "$name.zip" > SHA256SUMS.txt
           cat SHA256SUMS.txt
 
+      - name: Release notes from CHANGELOG.md
+        run: |
+          awk -v ver="${TAG#v}" '
+            /^## / { if (found) exit; if ($2 == ver || $2 == "[" ver "]") { found = 1; next } }
+            found { print }
+          ' CHANGELOG.md > dist/notes.md
+          cat dist/notes.md
+
       - name: Create GitHub release
         run: |
-          args=(--title "$TAG" --generate-notes)
+          args=(--title "$TAG" --notes-file dist/notes.md --generate-notes)
           case "$TAG" in *-*) args+=(--prerelease) ;; esac
           if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
             args+=(--target "$GITHUB_SHA")   # creates the tag on this commit

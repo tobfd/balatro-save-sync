@@ -48,6 +48,7 @@ jobs:
           toml=$(grep -oP '^version = "\K[^"]+' pc-mod/BalatroSync/lovely.toml)
           echo "mod $mod, lovely.toml $toml"
           [ "$mod" = "$toml" ] || { echo "::error::Version mismatch: balatro_sync.lua $mod vs lovely.toml $toml"; exit 1; }
+          grep -qE "^## \[?${mod}\]?( |$)" CHANGELOG.md || { echo "::error file=CHANGELOG.md::No changelog section for version $mod"; exit 1; }
       - name: No personal data in config
         run: |
           grep -q 'token = "CHANGE_ME"' pc-mod/BalatroSync/config.lua
