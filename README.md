@@ -1,5 +1,8 @@
 # Balatro Save Sync
 
+[![CI](https://github.com/tobfd/balatro-save-sync/actions/workflows/ci.yml/badge.svg)](https://github.com/tobfd/balatro-save-sync/actions/workflows/ci.yml)
+[![Latest release](https://img.shields.io/github/v/release/tobfd/balatro-save-sync)](https://github.com/tobfd/balatro-save-sync/releases/latest)
+
 Automatic, Steam-Cloud-style save sync between **Balatro on PC (Steam)** and the
 **Android build made with [balatro-mobile-maker](https://github.com/blake502/balatro-mobile-maker)**,
 through a tiny self-hosted server in your home network.
@@ -64,6 +67,7 @@ balatro-save-sync
 │   │   ├───conf.lua
 │   │   └───game_main.lua
 │   ├───love_e2e.py
+│   ├───patcher_test.py
 │   ├───run_worker_test.sh
 │   └───worker_test.lua
 ├───LICENSE
@@ -71,6 +75,9 @@ balatro-save-sync
 ```
 
 ## Setup
+
+Download `balatro-save-sync-vX.Y.Z.zip` from the [latest release](https://github.com/tobfd/balatro-save-sync/releases/latest) and unpack it.
+The steps below refer to its folders.
 
 ### 1. Server
 

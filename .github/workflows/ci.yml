@@ -1,0 +1,101 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+  workflow_call:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  checks:
+    name: Syntax and config checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - name: Install LuaJIT
+        run: sudo apt-get update -q && sudo apt-get install -y -q luajit
+      - name: Compile Python files
+        run: python -m py_compile server/server.py android/make_patched_exe.py tests/*.py
+      - name: Compile Lua files
+        run: |
+          for f in pc-mod/BalatroSync/*.lua tests/love_e2e/*.lua; do
+            luajit -bl "$f" > /dev/null || { echo "::error file=$f::Lua syntax error"; exit 1; }
+          done
+          luajit -e 'local M = dofile("pc-mod/BalatroSync/balatro_sync.lua"); assert(loadstring(M.WORKER_SOURCE, "worker"))'
+      - name: Check lovely.toml
+        run: |
+          python - <<'PY'
+          import tomllib
+          data = tomllib.load(open("pc-mod/BalatroSync/lovely.toml", "rb"))
+          assert data["manifest"]["version"], "manifest version missing"
+          assert len(data["patches"]) == 3, "expected 3 patches"
+          print("lovely.toml ok")
+          PY
+      - name: Versions match
+        run: |
+          mod=$(grep -oP 'VERSION = "\K[^"]+' pc-mod/BalatroSync/balatro_sync.lua)
+          toml=$(grep -oP '^version = "\K[^"]+' pc-mod/BalatroSync/lovely.toml)
+          echo "mod $mod, lovely.toml $toml"
+          [ "$mod" = "$toml" ] || { echo "::error::Version mismatch: balatro_sync.lua $mod vs lovely.toml $toml"; exit 1; }
+      - name: No personal data in config
+        run: |
+          grep -q 'token = "CHANGE_ME"' pc-mod/BalatroSync/config.lua
+          grep -q 'SYNC_TOKEN: "CHANGE_ME"' server/compose.yaml
+
+  sync:
+    name: Sync logic (server on Python ${{ matrix.python }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.12", "3.15"]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python }}
+          allow-prereleases: true
+      - name: Install LuaJIT and LuaSocket
+        run: sudo apt-get update -q && sudo apt-get install -y -q luajit lua-socket
+      - name: Run sync logic tests
+        run: PYTHON=python ./tests/run_worker_test.sh
+
+  patcher:
+    name: Android patcher (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - name: Install 7-Zip
+        if: runner.os == 'Linux'
+        run: sudo apt-get update -q && sudo apt-get install -y -q p7zip-full
+      - name: Run patcher tests
+        run: python tests/patcher_test.py
+
+  engine:
+    name: Real LOVE 11.5 engine
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install LOVE and a virtual display
+        run: sudo apt-get update -q && sudo apt-get install -y -q love xvfb libgl1-mesa-dri
+      - name: Run engine tests
+        run: python3 tests/love_e2e.py

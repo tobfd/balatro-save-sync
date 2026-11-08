@@ -1,0 +1,36 @@
+name: Bug report
+description: Something doesn't sync or behaves strangely
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: What did you do, what did you expect, what happened instead?
+    validations:
+      required: true
+  - type: input
+    id: message
+    attributes:
+      label: Message bottom-left after start
+      placeholder: 'e.g. "Save sync: server not reachable"'
+  - type: textarea
+    id: setup
+    attributes:
+      label: Setup
+      description: Balatro version, Lovely version, balatro-mobile-maker version, Android device(s), how the server runs.
+      placeholder: |
+        Balatro 1.0.1o, Lovely 0.9.0
+        balatro-mobile-maker 0.8.3, Pixel 9
+        Server: Docker on a home server
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: |
+        PC: the `[BalatroSync]` lines from `%AppData%\Balatro\Mods\lovely\log\`.
+        Server: the container log around the time it happened.
+        Please remove your token if it appears anywhere.
+      render: text
