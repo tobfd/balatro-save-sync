@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.1.1 - 2026-11-08
+
+### Fixed
+
+- The Android patcher read the `config.lua` next to it. After unpacking a new release that file only has placeholders, so the patcher built a `Balatro.exe` with the example IP and token and only printed a warning. It now uses the config of the **installed PC mod** (`%APPDATA%\Balatro\Mods\BalatroSync`, or inside the Proton prefix on Linux) when that one is set up, shows which config it used, and stops without writing anything if the config still has placeholders
+
+### Upgrading from 1.1.0
+
+- Only the Android patcher changed. Server, PC mod and existing APKs keep working as they are
+- If you ran the 1.1.0 patcher on a fresh release folder, run it again before building an APK
+
 ## 1.1.0 - 2026-11-08
 
 Linux support and a safer first sync, based on feedback from a Linux (Steam + Proton) user.

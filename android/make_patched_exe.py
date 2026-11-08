@@ -14,7 +14,9 @@ Options:
   --exe PATH      Balatro.exe to start from (default: found via Steam)
   --out DIR       balatro-mobile-maker folder (asked if missing)
   --device NAME   device name shown in sync messages (default: Tablet)
-  --config PATH   BalatroSync config.lua to use (default: ../pc-mod/BalatroSync/config.lua)
+  --config PATH   BalatroSync config.lua to use. Default: the config of the installed
+                  PC mod (%APPDATA%\\Balatro\\Mods\\BalatroSync, or inside the Proton
+                  prefix on Linux), else ../pc-mod/BalatroSync/config.lua
 """
 
 import argparse
@@ -31,6 +33,11 @@ MOD_DIR = os.path.join(HERE, "..", "pc-mod", "BalatroSync")
 BOOT_LINE = 'require("balatro_sync").install(require("balatro_sync_config"))'
 EOCD_SIG = b"PK\x05\x06"
 
+# Placeholders shipped in the release's config.lua.
+EXAMPLE_HOST = "192.168.1.10:"
+PLACEHOLDER_TOKEN = "CHANGE_ME"
+BALATRO_APP_ID = "2379780"
+
 # Where Steam lives on Linux, relative to the home folder. Debian/Ubuntu packages
 # use ~/.steam/debian-installation, ~/.steam/steam and ~/.steam/root are symlinks
 # most distributions create, Flatpak keeps everything inside its sandbox folder.
@@ -44,9 +51,8 @@ LINUX_STEAM_ROOTS = (
 )
 
 
-def find_steam_balatro():
-    """Locate Balatro.exe through the Steam install and its library folders."""
-    candidates = []
+def steam_libraries():
+    """Steam install folders plus all library folders listed in libraryfolders.vdf."""
     steam_roots = []
     if sys.platform == "win32":
         try:
@@ -79,13 +85,63 @@ def find_steam_balatro():
         if os.path.exists(vdf):
             with open(vdf, encoding="utf-8", errors="ignore") as fh:
                 for match in re.finditer(r'"path"\s+"([^"]+)"', fh.read()):
-                    libraries.append(match.group(1).replace("\\\\", "\\"))
-    for lib in libraries:
-        candidates.append(os.path.join(lib, "steamapps", "common", "Balatro", "Balatro.exe"))
-    for path in candidates:
+                    library = os.path.normpath(match.group(1).replace("\\\\", "\\"))
+                    if library not in libraries:
+                        libraries.append(library)
+    return libraries
+
+
+def find_steam_balatro():
+    """Locate Balatro.exe through the Steam install and its library folders."""
+    for lib in steam_libraries():
+        path = os.path.join(lib, "steamapps", "common", "Balatro", "Balatro.exe")
         if os.path.isfile(path):
             return path
     return None
+
+
+def installed_mod_configs():
+    """Where the installed PC mod keeps its config.lua - the one the PC syncs with."""
+    paths = []
+    appdata = os.environ.get("APPDATA")
+    if appdata:
+        paths.append(os.path.join(appdata, "Balatro", "Mods", "BalatroSync", "config.lua"))
+    if sys.platform != "win32":
+        # Proton: %AppData% lives in the game's prefix inside its Steam library.
+        for lib in steam_libraries():
+            paths.append(os.path.join(lib, "steamapps", "compatdata", BALATRO_APP_ID, "pfx", "drive_c",
+                                      "users", "steamuser", "AppData", "Roaming", "Balatro", "Mods",
+                                      "BalatroSync", "config.lua"))
+    return paths
+
+
+def config_values(text):
+    url = re.search(r'server_url\s*=\s*"([^"]*)"', text)
+    token = re.search(r'token\s*=\s*"([^"]*)"', text)
+    return (url.group(1) if url else ""), (token.group(1) if token else "")
+
+
+def config_problems(url, token):
+    problems = []
+    if not url:
+        problems.append("server_url is empty")
+    elif EXAMPLE_HOST in url:
+        problems.append("server_url still has the example IP")
+    if not token or token == PLACEHOLDER_TOKEN:
+        problems.append("token is not set")
+    return problems
+
+
+def choose_config(explicit):
+    """Returns (path, where it came from). Prefers the installed PC mod's config."""
+    if explicit:
+        return explicit, "given with --config"
+    for path in installed_mod_configs():
+        if os.path.isfile(path):
+            with open(path, encoding="utf-8") as fh:
+                if not config_problems(*config_values(fh.read())):
+                    return path, "installed PC mod"
+    return os.path.join(MOD_DIR, "config.lua"), "next to this script"
 
 
 def zip_layout(data):
@@ -109,9 +165,8 @@ def read_config(path, device):
     new_text, count = re.subn(r'(device_name\s*=\s*)"[^"]*"', r'\g<1>"%s"' % device.replace('"', ""), text)
     if count != 1:
         raise ValueError("could not find device_name in " + path)
-    url = re.search(r'server_url\s*=\s*"([^"]*)"', new_text)
-    token = re.search(r'token\s*=\s*"([^"]*)"', new_text)
-    return new_text, (url.group(1) if url else ""), (token.group(1) if token else "")
+    url, token = config_values(new_text)
+    return new_text, url, token
 
 
 def patch_main(source):
@@ -125,6 +180,13 @@ def patch_main(source):
 
 
 def build(exe_path, out_dir, device, config_path):
+    config_text, url, token = read_config(config_path, device)
+    problems = config_problems(url, token)
+    if problems:
+        raise ValueError("%s in %s - nothing was written. Edit that file, or point to your configured "
+                         "one with --config (usually %%APPDATA%%\\Balatro\\Mods\\BalatroSync\\config.lua)."
+                         % (" and ".join(problems), os.path.abspath(config_path)))
+
     with open(exe_path, "rb") as fh:
         data = fh.read()
     prefix_len, relative = zip_layout(data)
@@ -132,7 +194,6 @@ def build(exe_path, out_dir, device, config_path):
 
     with open(os.path.join(MOD_DIR, "balatro_sync.lua"), "rb") as fh:
         client = fh.read()
-    config_text, url, token = read_config(config_path, device)
 
     out = io.BytesIO()
     if not relative:
@@ -186,7 +247,7 @@ def main():
     parser.add_argument("--exe", help="source Balatro.exe (default: Steam install)")
     parser.add_argument("--out", help="balatro-mobile-maker folder")
     parser.add_argument("--device", default="Tablet", help="device name (default: Tablet)")
-    parser.add_argument("--config", default=os.path.join(MOD_DIR, "config.lua"), help="BalatroSync config.lua")
+    parser.add_argument("--config", help="BalatroSync config.lua (default: the installed PC mod's config)")
     args = parser.parse_args()
 
     exe = args.exe or find_steam_balatro()
@@ -201,15 +262,13 @@ def main():
     if not out_dir or not os.path.isdir(out_dir):
         sys.exit("Folder not found: %r" % out_dir)
 
-    target, url, token, patched = build(exe, out_dir, args.device, args.config)
+    config_path, config_source = choose_config(args.config)
+    target, url, token, patched = build(exe, out_dir, args.device, config_path)
     print("Source:       " + exe)
+    print("Config:       %s (%s)" % (os.path.abspath(config_path), config_source))
     print("Written:      " + target + ("" if patched else "  (main.lua was already patched)"))
     print("Device name:  " + args.device)
     print("Server:       " + url)
-    if "192.168.1.10:" in url:
-        print("\nNOTE: server_url still has the example IP - edit config.lua and run this again!")
-    if not token or token == "CHANGE_ME":
-        print("\nNOTE: token in config.lua is not set - edit it and run this again!")
     print("\nNext: run balatro-mobile-maker in that folder as usual.")
     print("  - answer 'N' when it offers to transfer saves (sync does that now)")
     print("  - let it install the APK, or copy balatro.apk to the tablet and install it as an update")
