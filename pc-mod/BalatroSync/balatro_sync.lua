@@ -16,7 +16,7 @@ Usage (the PC mod and the Android patcher already do this):
 It has to run before main.lua defines love.load.
 ]]
 
-local M = { VERSION = "1.1.0" }
+local M = { VERSION = "1.1.1" }
 
 local unpack = unpack or table.unpack
 

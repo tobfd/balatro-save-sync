@@ -150,10 +150,13 @@ def main():
         with open(src, "rb") as fh:
             check(b"balatro_sync" not in fh.read(), "source exe is still unpatched")
 
-        print("6) Warn about an unconfigured config")
+        print("6) Refuse an unconfigured config")
         os.makedirs(os.path.join(work, "maker4"), exist_ok=True)
         res = run_patcher("--exe", src, "--out", os.path.join(work, "maker4"), "--config", CONFIG)
-        check("example IP" in res.stdout and "token" in res.stdout, "placeholder IP and token are reported")
+        check(res.returncode != 0, "placeholder config stops the patcher")
+        check("example IP" in res.stderr and "token" in res.stderr and "--config" in res.stderr,
+              "error names the problems and how to fix them")
+        check(not os.path.exists(os.path.join(work, "maker4", "Balatro.exe")), "nothing is written")
 
         print("7) Reject something that is not Balatro")
         bogus = os.path.join(work, "bogus.exe")
@@ -164,11 +167,77 @@ def main():
 
         if sys.platform != "win32":
             linux_steam_tests(work, config)
+        config_lookup_tests(work, src, config)
     finally:
         shutil.rmtree(work, ignore_errors=True)
 
     print("\n%d passed, %d failed" % (sum(results), len(results) - sum(results)))
     return 0 if all(results) else 1
+
+
+def write_config(path, url, token):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(CONFIG, encoding="utf-8") as fh:
+        text = fh.read()
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write(text.replace('"http://192.168.1.10:8765"', '"%s"' % url).replace('"CHANGE_ME"', '"%s"' % token))
+
+
+def built_config(maker):
+    with zipfile.ZipFile(os.path.join(maker, "Balatro.exe")) as z:
+        return z.read("balatro_sync_config.lua").decode("utf-8")
+
+
+def config_lookup_tests(work, src, config):
+    # Without --config the patcher must use the installed PC mod's config
+    # (the one the PC actually syncs with), not the placeholder next to it.
+    home = os.path.join(work, "home_cfg")
+    os.makedirs(home)
+    appdata = os.path.join(work, "appdata")
+    installed = os.path.join(appdata, "Balatro", "Mods", "BalatroSync", "config.lua")
+    env = dict(os.environ, HOME=home, APPDATA=appdata)
+
+    print("12) Use the installed PC mod's config by default")
+    write_config(installed, "http://10.0.0.7:8765", "installedtoken")
+    out = os.path.join(work, "maker_cfg1")
+    os.makedirs(out)
+    res = subprocess.run([sys.executable, PATCHER, "--exe", src, "--out", out],
+                         capture_output=True, text=True, env=env)
+    check(res.returncode == 0, "patcher succeeds without --config" + ("" if res.returncode == 0 else ": " + res.stderr))
+    check(os.path.exists(os.path.join(out, "Balatro.exe")) and '"http://10.0.0.7:8765"' in built_config(out)
+          and '"installedtoken"' in built_config(out), "settings come from the installed mod's config")
+    check("installed PC mod" in res.stdout and installed in res.stdout, "output says which config was used")
+
+    print("13) --config wins over the installed config")
+    out = os.path.join(work, "maker_cfg2")
+    os.makedirs(out)
+    res = subprocess.run([sys.executable, PATCHER, "--exe", src, "--out", out, "--config", config],
+                         capture_output=True, text=True, env=env)
+    check(res.returncode == 0 and '"http://10.0.0.5:8765"' in built_config(out), "explicit --config is used")
+
+    print("14) Unconfigured installed config: refuse")
+    write_config(installed, "http://192.168.1.10:8765", "CHANGE_ME")
+    out = os.path.join(work, "maker_cfg3")
+    os.makedirs(out)
+    res = subprocess.run([sys.executable, PATCHER, "--exe", src, "--out", out],
+                         capture_output=True, text=True, env=env)
+    check(res.returncode != 0 and not os.path.exists(os.path.join(out, "Balatro.exe")),
+          "placeholders everywhere: nothing is written")
+
+    if sys.platform != "win32":
+        print("15) Find the installed config inside the Proton prefix")
+        proton_home = os.path.join(work, "home_proton")
+        prefix_cfg = os.path.join(proton_home, ".steam", "steam", "steamapps", "compatdata", "2379780", "pfx",
+                                  "drive_c", "users", "steamuser", "AppData", "Roaming", "Balatro", "Mods",
+                                  "BalatroSync", "config.lua")
+        write_config(prefix_cfg, "http://10.0.0.9:8765", "protontoken")
+        out = os.path.join(work, "maker_cfg4")
+        os.makedirs(out)
+        env = dict(os.environ, HOME=proton_home)
+        env.pop("APPDATA", None)
+        res = subprocess.run([sys.executable, PATCHER, "--exe", src, "--out", out],
+                             capture_output=True, text=True, env=env)
+        check(res.returncode == 0 and '"protontoken"' in built_config(out), "Proton prefix config is used")
 
 
 def find_with_home(home):

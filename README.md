@@ -107,7 +107,11 @@ server_url = "http://192.168.x.y:8765",   -- your server's LAN IP, not a hostnam
 token = "<your token>",
 ```
 
-This one file is used for the PC mod **and** the Android build.
+This one file is used for the PC mod **and** the Android build: the patcher in step 4 reads the
+`config.lua` of your **installed** PC mod, so both always match.
+
+When you update to a new release, keep your installed `config.lua`. The one in the zip only has
+placeholders, and the patcher refuses to build with placeholders.
 
 ### 3. PC mod
 
@@ -142,6 +146,8 @@ Needs Python 3 on the PC.
    It finds `Balatro.exe` in your Steam library, adds the sync code (device name "Tablet",
    change with `--device`) and writes the result as `Balatro.exe` into the balatro-mobile-maker
    folder. Your Steam install is not modified.
+   It takes the settings from your installed PC mod's `config.lua` and prints which config it used;
+   pass `--config <path>` to use another one.
 2. Run balatro-mobile-maker in that folder as usual, with the patches you normally use.
    On Windows, **answer "N" to both save transfer questions.** Sync does that now.
 3. Let it install the APK (Windows only), use `adb install -r balatro.apk` (`-r` installs it as an
