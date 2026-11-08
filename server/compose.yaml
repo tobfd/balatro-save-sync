@@ -17,3 +17,11 @@ services:
     volumes:
       - ./server.py:/app/server.py:ro
       - ./data:/data
+    # Marks the container unhealthy if the server stops answering.
+    # (If you change the port with SYNC_PORT, change it here too.)
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8765/health', timeout=3)"]
+      interval: 1m
+      timeout: 5s
+      retries: 3
+      start_period: 10s

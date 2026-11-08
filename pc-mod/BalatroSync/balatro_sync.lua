@@ -16,7 +16,7 @@ Usage (the PC mod and the Android patcher already do this):
 It has to run before main.lua defines love.load.
 ]]
 
-local M = { VERSION = "1.0.0" }
+local M = { VERSION = "1.1.0" }
 
 local unpack = unpack or table.unpack
 
@@ -131,6 +131,33 @@ local function looks_valid(content)
   end
   local ok, out = pcall(love.data.decompress, "string", "deflate", content)
   return ok and type(out) == "string" and #out > 0
+end
+
+-- How much has been played on a profile? Balatro counts rounds and hands in
+-- profile.jkr's career_stats, and both only ever go up, so they show which
+-- copy of a profile is further along. Plain text matching, nothing is run.
+-- Returns rounds, hands - or nil if the file can't be read.
+local function progress_of(content)
+  if type(content) ~= "string" or #content == 0 then
+    return nil
+  end
+  local text = content
+  if text:sub(1, 6) ~= "return" then
+    local ok, out = pcall(love.data.decompress, "string", "deflate", content)
+    if not ok or type(out) ~= "string" then
+      return nil
+    end
+    text = out
+  end
+  local stats = text:match('%["career_stats"%]%s*=%s*(%b{})')
+  if not stats then
+    return nil
+  end
+  local rounds = tonumber(stats:match('%["c_rounds"%]%s*=%s*(%d+)'))
+  if not rounds then
+    return nil
+  end
+  return rounds, tonumber(stats:match('%["c_hands_played"%]%s*=%s*(%d+)')) or 0
 end
 
 ---------------------------------------------------------------- state ---
@@ -406,6 +433,33 @@ local function sync(mode, request_id)
     end
   end
 
+  -- Joining normally means taking the server state. Exception: this device
+  -- has clearly played more on that profile - e.g. a fresh phone happened to
+  -- sync first and uploaded an empty profile. Then this device keeps the
+  -- whole slot and uploads it; the server keeps the old state in its history.
+  local keep_local = {}
+  for slot in pairs(server_slots) do
+    if slot:match("^%d$") and not synced_slots[slot] then
+      local profile = slot .. "/profile.jkr"
+      local l_rounds, l_hands = progress_of((read_local(profile)))
+      if l_rounds then
+        local srv = manifest[profile]
+        local r_rounds, r_hands = 0, 0
+        local readable = true
+        if srv and srv.hash then
+          local data = download(profile, srv.hash)
+          r_rounds, r_hands = progress_of(data)
+          readable = r_rounds ~= nil
+        end
+        if readable and (l_rounds > r_rounds or (l_rounds == r_rounds and l_hands > r_hands)) then
+          keep_local[slot] = true
+          note(("slot %s: this device played more (%d vs %d rounds), keeping its saves")
+            :format(slot, l_rounds, r_rounds))
+        end
+      end
+    end
+  end
+
   local writes = {}
   for _, path in ipairs(TRACKED) do
     local content, lmtime = read_local(path)
@@ -441,7 +495,7 @@ local function sync(mode, request_id)
         -- times can't tell which progress is newer (Balatro rewrites its
         -- saves on every start), so the device joins the existing state as a
         -- whole - including "no run in progress" - and its own old files go
-        -- to the local backup.
+        -- to the local backup. Unless it played more (see keep_local above).
         local slot = slot_of(path)
         local joining = server_slots[slot] and not synced_slots[slot]
         local first_contact = (base.rev or 0) == 0 and (srv.rev > 0 or joining)
@@ -452,7 +506,7 @@ local function sync(mode, request_id)
         if startup and state.force_pull and srv.rev > 0 and srv.rev >= base.rev then
           remote_wins = true -- last session was stale: take the server state
         elseif first_contact then
-          remote_wins = true
+          remote_wins = not keep_local[slot]
         elseif remote_changed and local_changed then
           res.conflicts = res.conflicts + 1
           remote_wins = remote_newer

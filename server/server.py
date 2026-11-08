@@ -12,15 +12,22 @@ Only the Python standard library is used. Configuration via environment:
   SYNC_DATA_DIR       storage folder (default /data)
   SYNC_HISTORY_KEEP   versions kept per file (default 50)
 
-API (all endpoints need the token, as header X-Sync-Token or ?token=):
+Sync API (devices send the token in the X-Sync-Token header):
   GET    /api/manifest                    one line per file: path, rev, md5 or "-", mtime, device
   GET    /api/file?path=P                 current content of P
   PUT    /api/file?path&base&hash&mtime&device[&force=1]   upload new content
   DELETE /api/file?path&base&mtime&device[&force=1]        mark P as deleted
   GET    /api/history?path=P              list of stored versions
-  GET    /api/history/file?path=P&rev=R   content of an old version
-  POST   /api/restore?path=P&rev=R        make an old version current again
-  GET    /?token=T                        status page with restore buttons
+
+Web page (log in once with the token, then a session cookie is used; the
+token never appears in a URL):
+  GET    /                                status page, or the login form
+  POST   /login                           form field "token"; sets the cookie
+  POST   /logout                          removes the cookie
+  GET    /api/history/file?path=P&rev=R   download an old version (cookie or header)
+  POST   /api/restore?path=P&rev=R        make an old version current (cookie or header)
+  GET    /health                          "ok", no login needed (Docker healthcheck)
+  An old bookmark like /?token=T still works: it logs in and redirects to /.
 
 Uploads and deletes use optimistic concurrency: "base" must equal the
 current revision of the file, otherwise the server answers 409 so the client
@@ -37,6 +44,7 @@ import sys
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from http.cookies import CookieError, SimpleCookie
 from urllib.parse import parse_qs, quote, urlparse
 
 DATA_DIR = os.environ.get("SYNC_DATA_DIR", "/data")
@@ -44,6 +52,13 @@ TOKEN = os.environ.get("SYNC_TOKEN", "")
 PORT = int(os.environ.get("SYNC_PORT", "8765"))
 HISTORY_KEEP = max(1, int(os.environ.get("SYNC_HISTORY_KEEP", "50")))
 MAX_BODY = 16 * 1024 * 1024
+MAX_FORM = 4096
+
+# The web page logs in with a cookie. Its value is derived from the token, so
+# the cookie alone can't be used as the sync token, and a new token logs
+# everyone out automatically.
+COOKIE_NAME = "bsync_session"
+COOKIE_MAX_AGE = 30 * 24 * 3600
 
 # Only real Balatro save files can be synced: profile slots 1-9 and settings.
 PATH_RE = re.compile(r"^(?:[1-9]/(?:profile|meta|save)\.jkr|settings\.jkr)$")
@@ -209,8 +224,16 @@ def manifest_line(path, entry):
 STORE = None  # set in main()
 
 
+def session_value():
+    return hmac.new(TOKEN.encode(), b"balatro-sync web session v1", hashlib.sha256).hexdigest()
+
+
+def token_ok(given):
+    return bool(TOKEN) and bool(given) and hmac.compare_digest(given.encode(), TOKEN.encode())
+
+
 class Handler(BaseHTTPRequestHandler):
-    server_version = "BalatroSync/1.0"
+    server_version = "BalatroSync/1.1"
 
     # Silence the default per-request logging; we log meaningful events.
     def log_message(self, fmt, *args):
@@ -224,9 +247,29 @@ class Handler(BaseHTTPRequestHandler):
     def _route(self):
         return urlparse(self.path).path.rstrip("/") or "/"
 
-    def _authorized(self, q):
-        given = self.headers.get("X-Sync-Token") or q.get("token", "")
-        return bool(TOKEN) and hmac.compare_digest(given.encode(), TOKEN.encode())
+    def _cookie_ok(self):
+        try:
+            jar = SimpleCookie(self.headers.get("Cookie") or "")
+        except CookieError:
+            return False
+        morsel = jar.get(COOKIE_NAME)
+        return bool(TOKEN) and morsel is not None and hmac.compare_digest(
+            morsel.value.encode(), session_value().encode())
+
+    def _authorized(self, allow_cookie=False):
+        if token_ok(self.headers.get("X-Sync-Token") or ""):
+            return True
+        return allow_cookie and self._cookie_ok()
+
+    def _login_cookie(self, max_age=COOKIE_MAX_AGE):
+        value = session_value() if max_age else ""
+        return "%s=%s; Path=/; Max-Age=%d; HttpOnly; SameSite=Strict" % (COOKIE_NAME, value, max_age)
+
+    def _redirect_home(self, cookie=None):
+        headers = {"Location": "/"}
+        if cookie:
+            headers["Set-Cookie"] = cookie
+        self._send(303, "", headers=headers)
 
     def _send(self, code, body=b"", ctype="text/plain; charset=utf-8", headers=None):
         if isinstance(body, str):
@@ -253,8 +296,8 @@ class Handler(BaseHTTPRequestHandler):
             data += chunk
         return data
 
-    def _check(self, q, need_path=True):
-        if not self._authorized(q):
+    def _check(self, q, need_path=True, allow_cookie=False):
+        if not self._authorized(allow_cookie):
             self._send(401, "unauthorized\n")
             return None
         if need_path:
@@ -297,7 +340,7 @@ class Handler(BaseHTTPRequestHandler):
             body = "".join("%d\t%s\t%d\t%d\n" % (i["rev"], i["device"], i["size"], i["time"]) for i in items)
             return self._send(200, body)
         if route == "/api/history/file":
-            path = self._check(q)
+            path = self._check(q, allow_cookie=True)
             if path is None:
                 return
             with LOCK:
@@ -365,9 +408,14 @@ class Handler(BaseHTTPRequestHandler):
     # -- POST -----------------------------------------------------------
     def do_POST(self):
         q = self._query()
-        if self._route() != "/api/restore":
+        route = self._route()
+        if route == "/login":
+            return self._login()
+        if route == "/logout":
+            return self._redirect_home(self._login_cookie(max_age=0))
+        if route != "/api/restore":
             return self._send(404, "not found\n")
-        path = self._check(q)
+        path = self._check(q, allow_cookie=True)
         if path is None:
             return
         rev = to_int(q.get("rev"), -1)
@@ -378,15 +426,35 @@ class Handler(BaseHTTPRequestHandler):
             entry = STORE.put(path, data, int(time.time()), "restore")
         log("restore %-14s rev %d -> new rev %d" % (path, rev, entry["rev"]))
         if q.get("redirect") == "1":
-            return self._send(303, "", headers={"Location": "/?token=" + quote(q.get("token", ""))})
+            return self._redirect_home()
         self._send(200, "%d\n" % entry["rev"])
+
+    # -- login ------------------------------------------------------------
+    def _login_page(self, code=200, error=""):
+        message = '<p class="error">%s</p>' % html.escape(error) if error else ""
+        body = PAGE_TEMPLATE % {"body": LOGIN_FORM % {"error": message}}
+        self._send(code, body, "text/html; charset=utf-8")
+
+    def _login(self):
+        length = to_int(self.headers.get("Content-Length"), -1)
+        if length < 0 or length > MAX_FORM:
+            return self._send(400, "invalid form\n")
+        form = parse_qs(self.rfile.read(length).decode("utf-8", "replace"))
+        if token_ok((form.get("token") or [""])[0]):
+            log("web login from %s" % self.client_address[0])
+            return self._redirect_home(self._login_cookie())
+        log("failed web login from %s" % self.client_address[0])
+        self._login_page(401, "Wrong token.")
 
     # -- status page ----------------------------------------------------------
     def _status_page(self, q):
-        if not self._authorized(q):
-            body = PAGE_TEMPLATE % {"body": TOKEN_FORM}
-            return self._send(200 if not q.get("token") else 401, body, "text/html; charset=utf-8")
-        token = quote(q.get("token", ""))
+        if "token" in q:
+            # Old bookmark with the token in the URL: log in and drop it from the address.
+            if token_ok(q.get("token")):
+                return self._redirect_home(self._login_cookie())
+            return self._login_page(401, "Wrong token.")
+        if not self._authorized(allow_cookie=True):
+            return self._login_page()
         with LOCK:
             entries = STORE.all_entries()
             histories = {p: STORE.history(p) for p, _ in entries}
@@ -396,15 +464,15 @@ class Handler(BaseHTTPRequestHandler):
             hist_rows = []
             for h in histories[path]:
                 restore = (
-                    '<form method="post" action="/api/restore?path=%s&rev=%d&token=%s&redirect=1">'
-                    '<button>Restore</button></form>' % (quote(path), h["rev"], token)
+                    '<form method="post" action="%s"><button>Restore</button></form>'
+                    % html.escape("/api/restore?path=%s&rev=%d&redirect=1" % (quote(path), h["rev"]))
                     if h["rev"] != e["rev"] else "<em>current</em>"
                 )
                 hist_rows.append(
                     "<tr><td>%d</td><td>%s</td><td>%s</td><td>%d bytes</td>"
-                    '<td><a href="/api/history/file?path=%s&rev=%d&token=%s">download</a></td><td>%s</td></tr>'
+                    '<td><a href="%s">download</a></td><td>%s</td></tr>'
                     % (h["rev"], html.escape(h["device"]), fmt_time(h["time"]), h["size"],
-                       quote(path), h["rev"], token, restore)
+                       html.escape("/api/history/file?path=%s&rev=%d" % (quote(path), h["rev"])), restore)
                 )
             rows.append(
                 "<tr><td><code>%s</code></td><td>%d</td><td>%s</td><td>%s</td><td>%s</td></tr>"
@@ -417,7 +485,7 @@ class Handler(BaseHTTPRequestHandler):
             "<table><tr><th>File</th><th>Rev</th><th>Device</th><th>Saved</th><th>State</th></tr>%s</table>"
             % "".join(rows) if rows else "<p>No saves uploaded yet.</p>"
         )
-        self._send(200, PAGE_TEMPLATE % {"body": "<h1>Balatro Save Sync</h1>" + table},
+        self._send(200, PAGE_TEMPLATE % {"body": STATUS_HEADER + table},
                    "text/html; charset=utf-8")
 
 
@@ -436,11 +504,17 @@ h1{font-size:20px} table{border-collapse:collapse;width:100%%;max-width:900px}
 td,th{padding:6px 8px;text-align:left;border-bottom:1px solid #35464b;font-size:14px}
 tr.hist td{border-bottom:2px solid #4a5f66} details table td{font-size:13px}
 a{color:#7fc4ff} button{background:#e05a47;color:#fff;border:0;border-radius:4px;padding:3px 8px;cursor:pointer}
-form{margin:0} input{padding:6px}
+form{margin:0} input{padding:6px} .error{color:#ff8a7a}
+.top{display:flex;justify-content:space-between;align-items:center;max-width:900px}
+.top button{background:#35464b}
 </style></head><body>%(body)s</body></html>"""
 
-TOKEN_FORM = """<h1>Balatro Save Sync</h1><form method="get" action="/">
-<input name="token" placeholder="Sync token" size="36"> <button>Open</button></form>"""
+LOGIN_FORM = """<h1>Balatro Save Sync</h1>%(error)s<form method="post" action="/login">
+<input type="password" name="token" placeholder="Sync token" size="36" autocomplete="current-password" autofocus>
+<button>Log in</button></form>"""
+
+STATUS_HEADER = """<div class="top"><h1>Balatro Save Sync</h1>
+<form method="post" action="/logout"><button>Log out</button></form></div>"""
 
 
 def main():

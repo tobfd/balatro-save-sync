@@ -31,7 +31,7 @@ flowchart LR
 | PC game left open while you play on the tablet | The PC shows **"Newer save found"**. Click or press a key, start Balatro again, done. |
 | Away from home | You play offline as usual; it syncs once the device is back on your home network. |
 | A game is open but nobody plays | It never uploads, so it can't overwrite real progress from the other device. |
-| A device syncs for the very first time | It adopts the state already on the server; its old saves are backed up locally. |
+| A device syncs for the very first time | It adopts the state already on the server and backs up its old saves, unless it has played more rounds on that profile: then it keeps its saves and uploads them. |
 
 Conflicts (both devices played offline) are decided by **when you last actually
 played** (last click/touch/key press), not by file times. Balatro rewrites its
@@ -51,7 +51,8 @@ Synced files: profile slots `1`, `2`, `3` × `profile.jkr`, `meta.jkr`, `save.jk
 balatro-save-sync
 ├───android
 │   ├───make_patched_exe.bat
-│   └───make_patched_exe.py
+│   ├───make_patched_exe.py
+│   └───make_patched_exe.sh
 ├───pc-mod
 │   └───BalatroSync
 │       ├───balatro_sync.lua
@@ -69,6 +70,7 @@ balatro-save-sync
 │   ├───love_e2e.py
 │   ├───patcher_test.py
 │   ├───run_worker_test.sh
+│   ├───server_test.py
 │   └───worker_test.lua
 ├───CHANGELOG.md
 ├───LICENSE
@@ -78,7 +80,10 @@ balatro-save-sync
 ## Setup
 
 Download `balatro-save-sync-vX.Y.Z.zip` from the [latest release](https://github.com/tobfd/balatro-save-sync/releases/latest) and unpack it.
-The steps below refer to its folders.
+The steps below refer to its folders. On Linux, also read [Linux (Steam + Proton)](#linux-steam--proton).
+
+> [!IMPORTANT]
+> For the first sync, start Balatro first on the device you played **last** (see [step 5](#5-first-sync)).
 
 ### 1. Server
 
@@ -88,7 +93,8 @@ The server is a single Python file without dependencies.
    `python -c "import secrets; print(secrets.token_hex(16))"`
 2. Create a stack/folder with `server/compose.yaml` and `server/server.py` next to each other.
 3. In `compose.yaml`, replace `CHANGE_ME` with your token. Deploy.
-4. Open `http://<server-ip>:8765/?token=<your token>`. You should see "No saves uploaded yet."
+4. Open `http://<server-ip>:8765` and log in with your token. You should see "No saves uploaded yet."
+   The page remembers the login with a cookie, so the token never ends up in a URL or bookmark.
 
 Without Docker: `SYNC_TOKEN=<token> SYNC_DATA_DIR=./data python3 server.py`.
 
@@ -110,6 +116,7 @@ Needs [Lovely](https://github.com/ethangreen-dev/lovely-injector) 0.5 or newer
 
 Copy `pc-mod/BalatroSync` to `%AppData%\Balatro\Mods\`, so you get
 `%AppData%\Balatro\Mods\BalatroSync\lovely.toml`. Steamodded is **not** required.
+On Linux the folder is inside the Proton prefix, see [Linux (Steam + Proton)](#linux-steam--proton).
 
 #### Vanilla by default, other mods only on demand
 
@@ -130,14 +137,15 @@ into its folder (Lovely 0.8+).
 
 Needs Python 3 on the PC.
 
-1. Run `android/make_patched_exe.bat`, or
+1. Run `android/make_patched_exe.bat` (Linux/macOS: `android/make_patched_exe.sh`), or
    `python android/make_patched_exe.py --out "<balatro-mobile-maker folder>"`.
    It finds `Balatro.exe` in your Steam library, adds the sync code (device name "Tablet",
    change with `--device`) and writes the result as `Balatro.exe` into the balatro-mobile-maker
    folder. Your Steam install is not modified.
 2. Run balatro-mobile-maker in that folder as usual, with the patches you normally use.
-   **Answer "N" to both save transfer questions.** Sync does that now.
-3. Let it install the APK, or copy `balatro.apk` to the device and install it as an update.
+   On Windows, **answer "N" to both save transfer questions.** Sync does that now.
+3. Let it install the APK (Windows only), use `adb install -r balatro.apk` (`-r` installs it as an
+   update), or copy `balatro.apk` to the device and install it as an update there.
    It is signed with the same debug key as before, so it installs as an update and keeps your saves.
    If Android ever refuses because of a signature conflict, **do not uninstall**. That wipes the saves on the device.
 
@@ -149,17 +157,55 @@ name, e.g. `--device Phone`. Every device keeps its own sync state, so any numbe
 Start Balatro first on the device you played **last**. It uploads its saves.
 Then start the other device: it adopts that state on start and backs up its own old saves.
 
+Safety net if the order goes wrong: when a device meets a profile slot for the first time, it
+compares how many rounds were played on it (Balatro counts them in `profile.jkr`). If the device
+has played more, it keeps its saves and uploads them instead, so a fresh phone that happened to
+sync first can't overwrite your real progress. The replaced state stays in the server history.
+
+## Linux (Steam + Proton)
+
+Balatro runs through Proton, so the PC mod lives inside the Proton prefix.
+
+- **Lovely:** copy `winmm.dll` into the game folder and set the Steam launch options to
+  `WINEDLLOVERRIDES="winmm=n,b" %command%` (for an older `version.dll`: `version=n,b`).
+  Details in [Lovely's instructions](https://github.com/ethangreen-dev/lovely-injector#manual-installation).
+- **Mods folder** (instead of `%AppData%\Balatro\Mods`):
+  `~/.steam/steam/steamapps/compatdata/2379780/pfx/drive_c/users/steamuser/AppData/Roaming/Balatro/Mods/`
+  For the Flatpak version of Steam, the same path starts with `~/.var/app/com.valvesoftware.Steam/.steam/steam/`.
+  The `[BalatroSync]` log lines are in `Mods/lovely/log/` there.
+- **Patcher:** `./android/make_patched_exe.sh --out ~/balatro-mobile-maker`. It looks for Steam in
+  `~/.steam/steam`, `~/.steam/root`, `~/.steam/debian-installation`, `~/.local/share/Steam` and the
+  Flatpak folder. Otherwise pass `--exe /path/to/steamapps/common/Balatro/Balatro.exe`.
+- **Installing the APK:** balatro-mobile-maker has no install or save transfer step on Linux.
+  Use `adb install -r balatro.apk`.
+
+### Known issues with balatro-mobile-maker beta 0.8.3 on Linux
+
+These are not bugs of this project, but the Android steps depend on the tool:
+
+- It downloads 7-Zip 24.03 from 7-zip.org, which is no longer available there, so the download fails.
+  Install 7-Zip from your package manager (e.g. `sudo apt install 7zip`) and put a link named `7zzs`
+  next to the tool: `ln -s "$(command -v 7zz)" 7zzs`.
+- When it is not run in a real terminal, it crashes at "Press any key to exit". This happens after
+  the build has finished, so `balatro.apk` is fine.
+
 ## Security
 
 The connection is plain HTTP with a shared token, intended for your **home network only**.
+The status page uses a login form and a cookie, so the token doesn't appear in URLs, but it still
+travels unencrypted.
 Don't expose port 8765 to the internet. To sync on the go, reach your home network through a
 VPN such as Tailscale or WireGuard and use the server's VPN address in `config.lua`.
 
 ## Mods on PC, vanilla on Android
 
-The Android build runs vanilla Balatro. When its progress syncs back, unlocks or discoveries
-that only exist through PC content mods may get dropped. If that matters, play modded on its
-own profile slot and leave that slot out of `profiles` in `config.lua` (e.g. `profiles = "1,2"`).
+The Android build runs vanilla Balatro. Saves from a modded PC (e.g. Steamodded jokers or decks)
+can contain content it doesn't know: a modded run in progress may not load there, and unlocks or
+discoveries that only exist through mods may get dropped when the Android progress syncs back.
+
+If you play with content mods, give them their own profile slot and leave that slot out of
+`profiles` in `config.lua`, e.g. `profiles = "1"` to sync only slot 1 and play modded on slot 2 or 3.
+After changing it, rebuild the Android app so both sides use the same setting.
 
 ## Troubleshooting
 
@@ -174,18 +220,20 @@ own profile slot and leave that slot out of `profiles` in `config.lua` (e.g. `pr
 - "not configured": `server_url` or `token` is empty.
 
 **Logs:**
-- PC: `%AppData%\Balatro\Mods\lovely\log\` contains a `[BalatroSync]` line for every upload/download.
+- PC: `%AppData%\Balatro\Mods\lovely\log\` contains a `[BalatroSync]` line for every upload/download
+  (on Linux in the Proton prefix, see above).
 - Server: one line per upload/delete/restore.
 
 **Restore an old version:** open the status page, expand a file's history, click **Restore**.
 It becomes the newest version. Devices pick it up on their next start; a running game shows the reload message.
 
 **Start over on a device:** delete `balatro_sync/state.txt` in its save folder. On the next start
-it adopts the server state again.
+it syncs like a new device again (see [First sync](#5-first-sync)).
 
 ## Tested with
 
 - Balatro 1.0.1o (Steam, Windows) with Lovely 0.9.0
+- Ubuntu with Steam + Proton, Lovely and Steamodded (community report)
 - balatro-mobile-maker beta 0.8.3 on a Samsung Galaxy Tab S8+ and a Google Pixel 9
 - Server on `python:3.12-alpine`, also checked with Python 3.15
 
