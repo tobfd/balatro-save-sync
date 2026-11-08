@@ -161,11 +161,79 @@ def main():
             fh.write(b"MZ" + b"\0" * 1000)
         res = run_patcher("--exe", bogus, "--out", os.path.join(work, "maker4"), "--config", config)
         check(res.returncode != 0, "file without a game archive is rejected")
+
+        if sys.platform != "win32":
+            linux_steam_tests(work, config)
     finally:
         shutil.rmtree(work, ignore_errors=True)
 
     print("\n%d passed, %d failed" % (sum(results), len(results) - sum(results)))
     return 0 if all(results) else 1
+
+
+def find_with_home(home):
+    """Run the patcher's Steam lookup with a fake home folder."""
+    code = ("import importlib.util, sys; "
+            "spec = importlib.util.spec_from_file_location('p', sys.argv[1]); "
+            "m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m); "
+            "print(m.find_steam_balatro() or '')")
+    env = dict(os.environ, HOME=home)
+    res = subprocess.run([sys.executable, "-c", code, PATCHER], capture_output=True, text=True, env=env)
+    return res.stdout.strip()
+
+
+def place_game(steam_root):
+    path = os.path.join(steam_root, "steamapps", "common", "Balatro", "Balatro.exe")
+    os.makedirs(os.path.dirname(path))
+    make_fake_exe(path)
+    return path
+
+
+def linux_steam_tests(work, config):
+    print("8) Find Balatro.exe in the usual Linux Steam folders")
+    layouts = {
+        "Debian/Ubuntu package": ".steam/debian-installation",
+        "~/.steam/steam": ".steam/steam",
+        "~/.local/share/Steam": ".local/share/Steam",
+        "Flatpak": ".var/app/com.valvesoftware.Steam/.local/share/Steam",
+    }
+    for i, (label, rel) in enumerate(layouts.items()):
+        home = os.path.join(work, "home%d" % i)
+        expected = place_game(os.path.join(home, rel))
+        found = find_with_home(home)
+        check(os.path.realpath(found) == os.path.realpath(expected), "%s layout is found" % label)
+
+    print("9) Follow libraryfolders.vdf to a second Steam library")
+    home = os.path.join(work, "home_lib")
+    root = os.path.join(home, ".local", "share", "Steam")
+    os.makedirs(os.path.join(root, "steamapps"))
+    library = os.path.join(work, "games_disk", "SteamLibrary")
+    expected = place_game(library)
+    with open(os.path.join(root, "steamapps", "libraryfolders.vdf"), "w", encoding="utf-8") as fh:
+        fh.write('"libraryfolders"\n{\n\t"0"\n\t{\n\t\t"path"\t\t"%s"\n\t}\n'
+                 '\t"1"\n\t{\n\t\t"path"\t\t"%s"\n\t}\n}\n' % (root, library))
+    check(os.path.realpath(find_with_home(home)) == os.path.realpath(expected), "game on a second library is found")
+
+    print("10) Run without --exe and without Steam")
+    empty_home = os.path.join(work, "home_empty")
+    os.makedirs(empty_home)
+    out = os.path.join(work, "maker5")
+    os.makedirs(out)
+    env = dict(os.environ, HOME=empty_home)
+    res = subprocess.run([sys.executable, PATCHER, "--out", out, "--config", config],
+                         capture_output=True, text=True, env=env)
+    check(res.returncode != 0 and "--exe" in res.stderr and "/steamapps/" in res.stderr,
+          "clear error with a Linux path example")
+
+    print("11) Shell launcher")
+    launcher = os.path.join(ROOT, "android", "make_patched_exe.sh")
+    home = os.path.join(work, "home0")
+    out = os.path.join(work, "maker6")
+    os.makedirs(out)
+    res = subprocess.run(["sh", launcher, "--out", out, "--device", "Deck", "--config", config],
+                         capture_output=True, text=True, env=dict(os.environ, HOME=home))
+    check(res.returncode == 0 and os.path.exists(os.path.join(out, "Balatro.exe")),
+          "make_patched_exe.sh finds the game and patches it")
 
 
 if __name__ == "__main__":

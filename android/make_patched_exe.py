@@ -8,7 +8,8 @@ run balatro-mobile-maker as usual and it builds, signs and installs the APK.
 Your Steam installation is never modified.
 
 Usage:
-  python make_patched_exe.py --out "C:\\path\\to\\balatro-mobile-maker"
+  Windows:      python make_patched_exe.py --out "C:\\path\\to\\balatro-mobile-maker"
+  Linux/macOS:  python3 make_patched_exe.py --out ~/balatro-mobile-maker
 Options:
   --exe PATH      Balatro.exe to start from (default: found via Steam)
   --out DIR       balatro-mobile-maker folder (asked if missing)
@@ -29,6 +30,18 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 MOD_DIR = os.path.join(HERE, "..", "pc-mod", "BalatroSync")
 BOOT_LINE = 'require("balatro_sync").install(require("balatro_sync_config"))'
 EOCD_SIG = b"PK\x05\x06"
+
+# Where Steam lives on Linux, relative to the home folder. Debian/Ubuntu packages
+# use ~/.steam/debian-installation, ~/.steam/steam and ~/.steam/root are symlinks
+# most distributions create, Flatpak keeps everything inside its sandbox folder.
+LINUX_STEAM_ROOTS = (
+    ".steam/steam",
+    ".steam/root",
+    ".steam/debian-installation",
+    ".local/share/Steam",
+    ".var/app/com.valvesoftware.Steam/.local/share/Steam",
+    ".var/app/com.valvesoftware.Steam/.steam/steam",
+)
 
 
 def find_steam_balatro():
@@ -53,11 +66,14 @@ def find_steam_balatro():
             pass
         steam_roots.append(r"C:\Program Files (x86)\Steam")
     else:
-        steam_roots.append(os.path.expanduser("~/.local/share/Steam"))
+        home = os.path.expanduser("~")
+        steam_roots.extend(os.path.join(home, rel) for rel in LINUX_STEAM_ROOTS)
 
     libraries = []
     for root in steam_roots:
         root = os.path.normpath(root)
+        if root in libraries:
+            continue
         libraries.append(root)
         vdf = os.path.join(root, "steamapps", "libraryfolders.vdf")
         if os.path.exists(vdf):
@@ -175,10 +191,13 @@ def main():
 
     exe = args.exe or find_steam_balatro()
     if not exe or not os.path.isfile(exe):
-        sys.exit("Balatro.exe not found. Pass it with --exe \"...\\steamapps\\common\\Balatro\\Balatro.exe\"")
+        example = ("...\\steamapps\\common\\Balatro\\Balatro.exe" if sys.platform == "win32"
+                   else ".../steamapps/common/Balatro/Balatro.exe")
+        sys.exit('Balatro.exe not found. Pass it with --exe "%s"' % example)
     out_dir = args.out
     if not out_dir:
-        out_dir = input("Folder of balatro-mobile-maker (where its .exe is): ").strip().strip('"')
+        out_dir = input("Folder of balatro-mobile-maker: ").strip().strip('"')
+    out_dir = os.path.expanduser(out_dir)
     if not out_dir or not os.path.isdir(out_dir):
         sys.exit("Folder not found: %r" % out_dir)
 
