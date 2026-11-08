@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Starts a throwaway sync server, runs the worker test against it, stops it.
+# Starts a throwaway sync server, runs the sync logic tests against it, stops it.
+# Then runs the server's web login tests (tests/server_test.py, own server).
 set -u
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 DATA="$(mktemp -d)"
@@ -37,4 +38,7 @@ kill "$SERVER_PID" 2>/dev/null
 echo "--- server log (tail)"
 tail -n 12 "$DATA/server.log"
 rm -rf "$DATA"
+
+echo "--- web login tests"
+"$PYTHON" "$ROOT/tests/server_test.py" || STATUS=1
 exit $STATUS
